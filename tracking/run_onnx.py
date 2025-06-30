@@ -9,7 +9,7 @@ if prj_path not in sys.path:
 from lib.test.evaluation.tracker import Tracker
 
 
-def run_onnx(tracker_param, input_video, input_onnx):
+def run_onnx(tracker_param, input_video, input_onnx, output_video=None):
     """Run the tracker on a video.
     args:
         tracker_name: Name of tracking method.
@@ -23,9 +23,9 @@ def run_onnx(tracker_param, input_video, input_onnx):
     # Initializing tracker
     tracker = Tracker("artrackv2_seq", tracker_param)
 
-    init_bbox = [672, 108, 576, 864]
+    init_bbox = [100, 100, 100, 100]
 
-    tracker.run_onnx(input_video=input_video, init_bbox=init_bbox, input_onnx=input_onnx)
+    tracker.run_onnx(input_video=input_video, init_bbox=init_bbox, input_onnx=input_onnx, output_video=output_video)
     # torch.onnx.dynamo_export(tracker)
 
 def main():
@@ -33,10 +33,11 @@ def main():
     parser.add_argument('tracker_param', type=str, help='Name of config file.')
     parser.add_argument('input_video', type=str, help='path to the input video.')
     parser.add_argument('input_onnx', type=str, help='path to the onnx model.')
+    parser.add_argument('--output_video', type=str, default=None, help='path to the output video.')
 
     args = parser.parse_args()
 
-    run_onnx(args.tracker_param, args.input_video, args.input_onnx)
+    run_onnx(args.tracker_param, args.input_video, args.input_onnx, args.output_video)
 
 
 if __name__ == '__main__':

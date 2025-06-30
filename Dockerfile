@@ -1,5 +1,5 @@
-FROM nvidia/cuda:11.3.1-base-ubuntu20.04
-
+FROM nvidia/cuda:11.3.1-cudnn8-runtime-ubuntu20.04
+ENV DEBIAN_FRONTEND=noninteractive
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     wget \
@@ -24,8 +24,7 @@ ENV PATH=/opt/conda/bin:$PATH
 
 # Clone ARTrack repository and checkout ARTrackV2 branch
 RUN git clone https://github.com/iMaTzzz/ARTrack.git /workspace/ARTrack && \
-    cd /workspace/ARTrack && \
-    git checkout ARTrackV2
+    cd /workspace/ARTrack \
 
 # Copy required files
 COPY hand.mp4 /workspace/ARTrack/
@@ -35,7 +34,8 @@ COPY artrackv2_seq_256_full.pth.tar /workspace/ARTrack/
 WORKDIR /workspace/ARTrack
 
 # Create the conda environment
+COPY requirements.txt /workspace/ARTrack/
 RUN conda env create -f /workspace/ARTrack/ARTrack_env_cuda113.yaml
 
 # Set the default command
-CMD ["/bin/bash"]
+CMD ["/bin/bash", "-c", "source /opt/conda/bin/activate ARTrack_env_cuda113 && tail -f /dev/null"]

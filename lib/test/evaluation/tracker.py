@@ -256,7 +256,7 @@ class Tracker:
         else:
             raise ValueError("type of image_file should be str or list")
 
-    def export2onnx(self, input_video, init_bbox):
+    def export2onnx(self, input_video, init_bbox, output_path):
         """Run the tracker with the videofile.
         args:
             debug: Debug level.
@@ -289,12 +289,6 @@ class Tracker:
         device = 'cpu'
         template = template.to(device).type(torch.FloatTensor)
 
-        # ------------
-        print(f"{tracker.network.backbone.patch_embed=}")
-        with torch.no_grad():
-            torch.onnx.export(model=tracker.network.backbone.patch_embed, args=template, f="PatchEmbed.onnx", input_names=["template"], output_names=["sequence_features"], verbose=True, opset_version=15)
-        # ------------
-
         with torch.no_grad():
             # device = 'cpu'
             # template = template.to(device).type(torch.FloatTensor)
@@ -307,13 +301,12 @@ class Tracker:
             print(f"{search.shape}")
             print(f"{seq_input.shape}")
             # print(f"{dummy_input=}")
-            onnx_path = "tracking.onnx"
             input_names = ['template', 'appearance_features', 'search', 'seq_input']
             output_names = ['predicted_tokens', 'sequence_scores', 'sequence_features', 'score', 'refined_appearance_features']
             print('\n Exporting................... \n')
-            torch.onnx.export(model=model, args=dummy_input, f=onnx_path, verbose=True, input_names=input_names, output_names=output_names, opset_version=15)
+            torch.onnx.export(model=model, args=dummy_input, f=output_path, verbose=True, input_names=input_names, output_names=output_names, opset_version=15)
 
-    def run_onnx(self, input_video, init_bbox, input_onnx):
+    def run_onnx(self, input_video, init_bbox, input_onnx, output_video=None):
         """Run the tracker with the video file and sum the inference time for each frame.
         args:
             input_video
@@ -328,7 +321,6 @@ class Tracker:
         params.debug = getattr(params, 'debug', 0)
 
         # Create two trackers for comparing results between pytorch model and onnx model
-        tracker_test = self.create_tracker(params)
         tracker_onnx = self.create_tracker(params)
 
         # Read video and get first frame
@@ -336,26 +328,28 @@ class Tracker:
         if not cap.isOpened():
             raise ValueError("Unable to open video file")
 
+        # Get video properties
+        fps = cap.get(cv.CAP_PROP_FPS)
+        width = int(cap.get(cv.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv.CAP_PROP_FRAME_HEIGHT))
+
+        # Start writing video output
+        if output_video is not None:
+            fourcc = cv.VideoWriter_fourcc(*'mp4v')  # Codec for the output video
+            output = cv.VideoWriter(output_video, fourcc, fps, (width, height))
+
         # Initialize trackers
         init_bbox = {'init_bbox': init_bbox}
         ret, frame = cap.read()  # Read the first frame
         if not ret:
             raise ValueError("Unable to read the first frame from the video")
         
-        tracker_test.initialize(frame, init_bbox)
+        print(f"Before initialize call: frame type={type(frame)}, frame shape={frame.shape if isinstance(frame, np.ndarray) else 'N/A'}")
+        print(f"Before initialize call: init_bbox={init_bbox}")
         tracker_onnx.initialize(frame, init_bbox)
 
         # Get pre-processed input for the ONNX model
-        template, appearance_features, search, seq_input = tracker_onnx.preprocess_input(frame)
-        providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']  # Try CUDA first, fall back to CPU if necessary
-
-        ort_session_patch = onnxruntime.InferenceSession("PatchEmbed.onnx", providers=providers)
-        ort_patch_input = {
-            'template': template.detach().cpu().numpy()
-        }
-        patchEmbedOutput = ort_session_patch.run(None, ort_patch_input)
-        print(f"{tracker_onnx.dz_feat=}")
-        print(f"{patchEmbedOutput[0]=}")
+        providers = ['CPUExecutionProvider']  # Try CUDA first, fall back to CPU if necessary
 
         # Check the model (optional)
         onnx_model = onnx.load(input_onnx)
@@ -363,7 +357,6 @@ class Tracker:
         ort_session = onnxruntime.InferenceSession(input_onnx, providers=providers)
 
         total_time_ort = 0.0  # Initialize total time accumulator
-        total_time_original = 0.0  # Initialize total time accumulator
         frame_count = 0  # Initialize frame count
         
         while True:
@@ -371,32 +364,34 @@ class Tracker:
             if not ret:
                 break  # Exit the loop when the video ends
 
-            # Prepare inputs for ONNX inference
-            ort_inputs = {
-                'template': template.detach().cpu().numpy(),
-                'appearance_features': appearance_features.detach().cpu().numpy(),
-                'search': search.detach().cpu().numpy(),
-                'seq_input': seq_input.detach().cpu().numpy()
-            }
-
-            tic = time.time()  # Start timing inference
-            ort_outputs = ort_session.run(None, ort_inputs)
-            inference_time_ort = time.time() - tic  # Calculate the time taken for this frame
-
-            tic = time.time()
-
-            with torch.no_grad():
-                original_outputs = tracker_test.network.forward(template, appearance_features, search, seq_input)
-            inference_time_original = time.time() - tic  # Calculate the time taken for this frame
-            
-            total_time_ort += inference_time_ort  # Accumulate the inference time
-            total_time_original += inference_time_original
             frame_count += 1  # Increment the frame count
+            
+            # Track the object
+            print(f"Processing frame {frame_count}")
+            tic = time.time()
+            print(f"Before track_onnx call: frame type={type(frame)}, frame shape={frame.shape if isinstance(frame, np.ndarray) else 'N/A'}")
+            print(f"Before track_onnx call: ort_session type={type(ort_session)}")
+            out = tracker_onnx.track_onnx(frame, ort_session)
+            inference_time_ort = time.time() - tic
+            total_time_ort += inference_time_ort
+            
+            state = [int(s) for s in out['target_bbox']]
+            
+            # Draw bounding box on the frame
+            cv.rectangle(frame, (state[0], state[1]), (state[0] + state[2], state[1] + state[3]), (0, 255, 0), 2)
+            
+            # Write the frame to the output video file
+            if output_video is not None:
+                output.write(frame)
 
             # Optionally, print results for this frame (for debugging)
-            print(f"Frame {frame_count}: Onnx inference took {inference_time_ort:.4f} seconds vs Original inference took {inference_time_original:.4f} seconds")
-            print(f"Test Output Seqs: {original_outputs['predicted_tokens']} vs ONNX Output: {ort_outputs[0]}")
+            print(f"Frame {frame_count}: Onnx inference took {inference_time_ort:.4f} seconds")
         
         # After processing all frames, print the total time
-        print(f"Total time for {frame_count} frames: Onnx: {total_time_ort:.4f} seconds vs Original: {total_time_original:.4f}")
-        print(f"Average inference time per frame: Onnx: {total_time_ort / frame_count:.4f} seconds vs Original : {total_time_original / frame_count:.4f}")
+        print(f"Total time for {frame_count} frames: Onnx: {total_time_ort:.4f} seconds")
+        print(f"Average inference time per frame: Onnx: {total_time_ort / frame_count:.4f} seconds")
+
+        # Release resources
+        cap.release()
+        if output_video is not None:
+            output.release()

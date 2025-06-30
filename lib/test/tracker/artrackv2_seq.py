@@ -49,17 +49,20 @@ class ARTrackV2Seq(BaseTracker):
         # self.x_feat = None
         self.update_ = False
 
+        print("Initializing tracker...")
         z_patch_arr, resize_factor, _ = sample_target(image, info['init_bbox'], self.params.template_factor,
                                                                 output_sz=self.params.template_size)  # output_sz=self.params.template_size
+        print("Sampled target.")
         self.z_patch_arr = z_patch_arr
         template = self.preprocessor.process(z_patch_arr)
+        print("Processed template.")
         with torch.no_grad():
             self.template = template
             self.dz_feat = self.network.backbone.patch_embed(template)
+            print("Got dz_feat.")
             weight = self.network.backbone.patch_embed.proj.weight.data
             bias = self.network.backbone.patch_embed.proj.bias.data
-            # print(f"{weight}")
-            # print(f"{bias}")
+            print("Got weights and biases.")
 
         self.box_mask_z = None
 
@@ -69,14 +72,15 @@ class ARTrackV2Seq(BaseTracker):
         for i in range(self.prenum - 1):
             self.store_result.append(info['init_bbox'].copy())
         self.frame_id = 0
+        print("Tracker initialized.")
 
-    def track(self, image):
-        # Time initialization
-        tic = time.time()
+    def track_onnx(self, image, ort_session):
         H, W, _ = image.shape
         self.frame_id += 1
-        x_patch_arr, resize_factor, _ = sample_target(image, self.state, self.params.search_factor,
+        x_patch_arr, resize_factor, x_box = sample_target(image, self.state, self.params.search_factor,
                                                                 output_sz=self.params.search_size)  # (x1, y1, w, h)
+        search = self.preprocessor.process(x_patch_arr)
+        
         for i in range(len(self.store_result)):
             box_temp = self.store_result[i].copy()
             box_out_i = transform_image_to_crop(torch.Tensor(self.store_result[i]), torch.Tensor(self.state),
@@ -94,59 +98,28 @@ class ARTrackV2Seq(BaseTracker):
 
         seqs_out = seqs_out.unsqueeze(0)
 
-        search = self.preprocessor.process(x_patch_arr)
-
-        with torch.no_grad():
-            # merge the template and the search
-            # run the transformer
-            # template = torch.concat([self.z_dict1.tensors.unsqueeze(1), self.z_dict2.tensors.unsqueeze(1)], dim=1)
-            out_dict = self.network.forward(
-                template=self.template, appearance_features=self.dz_feat, search=search, seq_input=seqs_out)
+        ort_inputs = {
+            'template': self.template.cpu().numpy(),
+            'appearance_features': self.dz_feat.cpu().numpy(),
+            'search': search.cpu().numpy(),
+            'seq_input': seqs_out.cpu().numpy()
+        }
+        
+        out_dict = self.network.track_onnx(ort_session, **ort_inputs)
 
         self.dz_feat = out_dict['refined_appearance_features']
-        # self.x_feat = out_dict['x_feat']
 
         pred_boxes = (out_dict['predicted_tokens'][:, 0:4] + 0.5) / (self.bins - 1) - 0.5
-        print(f"Predicted tokens shape after small calculations: {pred_boxes.shape}")
-
         pred_feat = out_dict['sequence_features']
-        print(f"Sequence features shape: {pred_feat.shape}")
-
-        # These are useless
-        # pred = pred_feat.permute(1, 0, 2).reshape(-1, self.bins * self.range + 6)
-        # print(f"After premute and reshape: {pred.shape}")
-
         pred = pred_feat[0:4, :, 0:self.bins * self.range]
-        print(f"After slicing: {pred.shape}")
-
         out = pred.softmax(-1).to(pred)
-        print(f"Shape of out: {out.shape}")
-        start_value = (-1 * self.range * 0.5 + 0.5) + 1 / (self.bins * self.range)
-        end_value = (self.range * 0.5 + 0.5) - 1 / (self.bins * self.range)
-        step_value = 2 / (self.bins * self.range)
-
-        # Print the components
-        print(f"Start value: {start_value}")
-        print(f"End value: {end_value}")
-        print(f"Step value: {step_value}")
         mul = torch.range((-1 * self.range * 0.5 + 0.5) + 1 / (self.bins * self.range), (self.range * 0.5 + 0.5) - 1 / (self.bins * self.range), 2 / (self.bins * self.range)).to(pred)
-        print(f"Shape of mul: {mul.shape}")
-
         ans = out * mul
-        print(f"Shape of ans after multiplication (out * mul): {ans.shape}")
-
         ans = ans.sum(dim=-1)
-        print(f"Shape of ans after sum(dim=-1): {ans.shape}")
-
         ans = ans.permute(1, 0).to(pred)
-        print(f"Shape of ans after permute(1, 0).to(pred): {ans.shape}")
-
 
         pred_boxes = (ans + pred_boxes) / 2
-        print(f"Shape of pred_boxes after ans+pred_boxes / 2: {pred_boxes.shape}")
-
         pred_boxes = pred_boxes.view(-1, 4).mean(dim=0)
-        print(f"Shape of pred_boxes after view+mean: {pred_boxes.shape}")
 
         pred_new = pred_boxes
         pred_new[2] = pred_boxes[2] - pred_boxes[0]
@@ -170,8 +143,6 @@ class ARTrackV2Seq(BaseTracker):
         out = dict()
 
         out["target_bbox"] = self.state
-        # Record time taken per inference
-        out['time'] = time.time() - tic
         return out
 
     def map_box_back(self, pred_box: list, resize_factor: float):

@@ -41,26 +41,52 @@ class ARTrackV2Seq(nn.Module):
 
         self.cross_2_decoder = cross_2_decoder
 
-    def forward(self, template: torch.Tensor,
-                appearance_features: torch.Tensor,
-                search: torch.Tensor,
-                seq_input: torch.Tensor,
-                ):
-        out, z_1_feat, score_feat = self.backbone(z_0=template, z_1_feat=appearance_features, x=search, identity=self.identity, seqs_input=seq_input)
+    def forward(self, template, appearance_features, search, seqs_input):
+        # Forward pass through the backbone
+        feat_dict = self.backbone.forward_features(template, appearance_features, search, self.identity, seqs_input)
 
-        # seq_feat = out['seq_feat'].permute(1, 0 ,2)
-        # pos = self.backbone.position_embeddings.weight.unsqueeze(0).repeat(seq_feat.shape[1], 1, 1).permute(1, 0 ,2)
+        # Extract features for the decoder
+        # Assuming 'feat_dict' contains necessary features for cross_2_decoder
+        # You might need to adjust these keys based on the actual output of your backbone
+        # For example, if backbone outputs 'pred_boxes' and 'pred_masks'
+        # predicted_tokens = feat_dict.get('pred_boxes')
+        # sequence_features = feat_dict.get('pred_masks')
 
-        score = self.score_mlp(score_feat)
-        out['score'] = score
+        # Placeholder for actual output extraction based on model's internal structure
+        # This part needs to be aligned with the actual model's output
+        output, z_1_feat, score_feat = feat_dict
 
-        # loss = torch.tensor(0.0, dtype=torch.float32).to(search.device)
-        z_1_feat = z_1_feat.reshape(z_1_feat.shape[0], int(z_1_feat.shape[1] ** 0.5), int(z_1_feat.shape[1] ** 0.5),
-                                    z_1_feat.shape[2]).permute(0, 3, 1, 2)
-        update_feat = self.cross_2_decoder(z_1_feat, eval=True)
-        update_feat = self.cross_2_decoder.patchify(update_feat)
-        out['refined_appearance_features'] = update_feat
+        predicted_tokens = output['predicted_tokens']
+        sequence_scores = output['sequence_scores']
+        sequence_features = output['sequence_features']
+        score = self.score_mlp(score_feat) # Corrected: score is derived from score_feat
+        refined_appearance_features = z_1_feat
 
+        return predicted_tokens, sequence_scores, sequence_features, score, refined_appearance_features
+
+    def track_onnx(self, ort_session, **kwargs):
+        template = kwargs['template']
+        appearance_features = kwargs['appearance_features']
+        search = kwargs['search']
+        seq_input = kwargs['seq_input']
+        
+        ort_inputs = {
+            'template': template,
+            'appearance_features': appearance_features,
+            'search': search,
+            'seq_input': seq_input
+        }
+        
+        ort_outputs = ort_session.run(None, ort_inputs)
+        
+        out = {
+            'predicted_tokens': torch.from_numpy(ort_outputs[0]),
+            'sequence_scores': torch.from_numpy(ort_outputs[1]),
+            'sequence_features': torch.from_numpy(ort_outputs[2]),
+            'score': torch.from_numpy(ort_outputs[3]),
+            'refined_appearance_features': torch.from_numpy(ort_outputs[4])
+        }
+        
         return out
 
 class MlpScoreDecoder(nn.Module):
