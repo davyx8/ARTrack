@@ -134,6 +134,11 @@ class Tracker:
 
             if len(seq.ground_truth_rect) > 1:
                 info['gt_bbox'] = seq.ground_truth_rect[frame_num]
+            info = seq.frame_info(frame_num)
+            info['previous_output'] = prev_output
+
+            if len(seq.ground_truth_rect) > 1:
+                info['gt_bbox'] = seq.ground_truth_rect[frame_num]
             out = tracker.track(image, info)
             prev_output = OrderedDict(out)
             _store_outputs(out, {'time': time.time() - start_time})

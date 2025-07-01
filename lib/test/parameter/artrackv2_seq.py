@@ -6,10 +6,10 @@ from lib.config.artrackv2_seq.config import cfg, update_config_from_file
 
 def parameters(yaml_name: str):
     params = TrackerParams()
-    prj_dir = env_settings().prj_dir
+    prj_dir = "/art2" # Explicitly set project directory for Docker
     save_dir = env_settings().save_dir
     # update default config from yaml file
-    yaml_file = os.path.join(prj_dir, 'experiments/artrackv2_seq/%s.yaml' % yaml_name)
+    yaml_file = os.path.join(prj_dir, 'experiments/artrackv2_seq/artrackv2_seq_256_full.yaml') # Hardcoded for now
     update_config_from_file(yaml_file)
     params.cfg = cfg
 
